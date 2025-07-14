@@ -1,0 +1,67 @@
+# from .conv_custom import AdaptiveDilatedConv
+import torch
+from mmcv.cnn import ConvModule
+from ..utils import resize
+from mmseg.registry import MODELS
+from .decode_head import BaseDecodeHead
+from torch import nn
+
+@MODELS.register_module()
+class LWNet_Head(BaseDecodeHead):
+    def __init__(self, **kwargs):
+        super(LWNet_Head, self).__init__(input_transform='multiple_select', **kwargs)
+        embedding_dim = self.channels
+        self.linear_fuse = ConvModule(
+            in_channels=embedding_dim,
+            out_channels=embedding_dim,
+            kernel_size=1,
+            stride=1,
+            groups=1,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg
+        )
+
+        self.boundary_refinement = nn.Sequential(
+            nn.Conv2d(embedding_dim, embedding_dim, 3, padding=1, groups=embedding_dim),
+            nn.BatchNorm2d(embedding_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(embedding_dim, embedding_dim, 1),
+            nn.BatchNorm2d(embedding_dim),
+            nn.ReLU(inplace=True)
+        )
+
+    def agg_res(self, preds):
+        base_feat = preds[0]
+        target_size = base_feat.size()[2:]
+
+        weights = []
+        total_weight = 0
+
+        for i in range(len(preds)):
+            if i == 0:
+                w = 1.0
+            else:
+                w = 1.0 + i * 0.5  
+            weights.append(w)
+            total_weight += w
+
+        weights = [w / total_weight for w in weights]
+
+        out = weights[0] * base_feat
+        for i in range(1, len(preds)):
+            feat = resize(preds[i], size=target_size, mode='bilinear', align_corners=False)
+            out += weights[i] * feat
+
+        return out
+
+    def forward(self, inputs):
+        xx = self._transform_inputs(inputs)
+        x = self.agg_res(xx)
+        x = self.boundary_refinement(x)
+        _c = self.linear_fuse(x)
+        x = self.cls_seg(_c)
+
+        return x
+
+
+
