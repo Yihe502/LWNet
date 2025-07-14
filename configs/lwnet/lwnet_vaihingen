@@ -1,0 +1,65 @@
+_base_ = [
+    '../_base_/models/lwnet.py', '../_base_/datasets/vaihingen.py',
+    '../_base_/default_runtime.py',  '../_base_/schedules/schedule_80k.py',
+]
+
+ratio = 1
+bs_ratio = 8 
+
+optimizer = dict(_delete_=True, type='AdamW', lr=0.00012, betas=(0.9, 0.999), weight_decay=0.05,
+                 paramwise_cfg=dict(custom_keys={'absolute_pos_embed': dict(decay_mult=0.),
+                                                 'head': dict(lr_mult=10.),
+                                                 'norm': dict(decay_mult=0.)}))
+
+lr_config = dict(_delete_=True, policy='poly',
+                 warmup='linear',
+                 warmup_iters=1500,
+                 warmup_ratio=1e-6,
+                 power=0.9, min_lr=0.0, by_epoch=False)
+
+max_iters = 80000
+param_scheduler = [
+    dict(
+        type='LinearLR', start_factor=1e-6, by_epoch=False, begin=0, end=3000),
+    dict(
+        type='CosineAnnealingLR',
+        begin=max_iters // 2,
+        T_max=max_iters // 2,
+        end=max_iters,
+        by_epoch=False,
+        eta_min=0.0)
+]
+
+# training schedule for 80k
+train_cfg = dict(type='IterBasedTrainLoop', max_iters=max_iters, val_interval=max_iters // 10)
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
+default_hooks = dict(
+    timer=dict(type='IterTimerHook'),
+    logger=dict(type='LoggerHook', interval=100, log_metric_by_epoch=False),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    checkpoint=dict(type='CheckpointHook', by_epoch=False, interval=max_iters // 10, max_keep_ckpts=10, save_best='mIoU', rule='greater'),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    visualization=dict(type='SegVisualizationHook'))
+
+crop_size = (512, 512)
+data_preprocessor = dict(size=crop_size)
+
+norm_cfg = dict(type='BN', requires_grad=True)
+model = dict(
+    data_preprocessor=data_preprocessor,
+    backbone=(dict(drop_path_rate=0.1)),
+    decode_head=dict(num_classes=6, loss_decode=[dict(type='CrossEntropyLoss', loss_name='loss_ce', loss_weight=1.0),
+                                                 dict(type='DiceLoss', loss_name='loss_dice', loss_weight=3.0)]))
+
+train_dataloader = dict(
+    batch_size=bs_ratio * ratio,
+    num_workers=min(bs_ratio * ratio, 8),
+)
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=2,)
+test_dataloader = val_dataloader
+
+randomness = dict(seed=304)
+work_dir = 'work_dirs/GRSL/LWNet'
